@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="ja-JP">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>A* Algorithm (JP)</title>
+    <style>
+      body {
+        margin: 0;
+        background: #ffffff;
+        color: #111;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      .wrap {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        gap: 12px;
+        padding: 12px;
+        min-height: 100vh;
+      }
+      .panel {
+        background: #ffffff;
+        border: 1px solid #000000;
+        border-radius: 8px;
+        padding: 10px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+      }
+      .row {
+        margin: 6px 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      label {
+        font-size: 13px;
+      }
+      input[type="number"] {
+        width: 72px;
+      }
+      canvas {
+        background: #ffffff;
+        border: 1px solid #cfd8dc;
+        border-radius: 8px;
+        display: block;
+      }
+      button {
+        padding: 6px 10px;
+        border-radius: 6px;
+        border: 1px solid #b0bec5;
+        background: #eceff1;
+        color: #111;
+        cursor: pointer;
+      }
+      button.primary {
+        background: #2e7d32;
+        color: #fff;
+        border-color: #2e7d32;
+      }
+      button.warn {
+        background: #ef6c00;
+        color: #fff;
+        border-color: #ef6c00;
+      }
+      .legend {
+        margin-top: 8px;
+        font-size: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .swatch {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin-right: 4px;
+        border: 1px solid #0003;
+      }
+      #err {
+        display: none;
+        margin-top: 8px;
+        padding: 6px 8px;
+        font-size: 12px;
+        background: #fdecea;
+        border: 1px solid #f5c6cb;
+        border-radius: 6px;
+        white-space: pre-wrap;
+        color: #a94442;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="panel">
+        <div class="row">
+          <label>列</label
+          ><input id="cols" type="number" value="20" min="5" max="200" />
+          <label>行</label
+          ><input id="rows" type="number" value="15" min="5" max="200" />
+          <button id="build">作成</button>
+        </div>
+        <div class="row">
+          <label
+            ><input
+              type="radio"
+              name="mode"
+              value="paint"
+              checked
+            />障害を配置</label
+          >
+          <label><input type="radio" name="mode" value="start" />始点</label>
+          <label><input type="radio" name="mode" value="goal" />終点</label>
+        </div>
+        <div class="row">
+          <label
+            ><input id="diag" type="checkbox" checked />斜め移動を許可</label
+          >
+          <label><input id="cut" type="checkbox" />角抜けを許可</label>
+        </div>
+        <div class="row">
+          <button id="solve" class="primary">探索</button>
+          <button id="prev">◀</button>
+          <button id="next">▶</button>
+          <button id="reset" class="warn">クリア</button>
+        </div>
+        <div class="row">
+          経路ステップ数: <span id="steps">0</span> | 現在:
+          <span id="cursor">0</span>
+        </div>
+        <div class="legend">
+          <span
+            ><span class="swatch" style="background: #13c57e"></span>始点</span
+          >
+          <span
+            ><span class="swatch" style="background: #6d03b4"></span>終点</span
+          >
+          <span
+            ><span class="swatch" style="background: #e53935"></span>障害</span
+          >
+          <span
+            ><span class="swatch" style="background: #d0b236"></span>経路</span
+          >
+          <span
+            ><span class="swatch" style="background: #3aa6ff"></span
+            >現在位置</span
+          >
+        </div>
+        <div id="err"></div>
+      </div>
+      <div class="panel"><canvas id="cv"></canvas></div>
+    </div>
+
+    <script>
+      (function () {
+        // ====== 基本状态 ======
+        let cols = 20,
+          rows = 15,
+          cell = 24;
+        let grid = [],
+          start = null,
+          goal = null,
+          path = [],
+          cursor = 0;
+        let allowDiag = true,
+          cutCorners = false,
+          mouseDown = false,
+          paintVal = true;
+
+        const cv = document.getElementById("cv");
+        const ctx = cv.getContext("2d");
+        const $ = (id) => document.getElementById(id);
+        const errBox = $("err");
+
+        function showErr(msg) {
+          errBox.style.display = "block";
+          errBox.textContent = String(msg);
+        }
+        function clearErr() {
+          errBox.style.display = "none";
+          errBox.textContent = "";
+        }
+
+        // ====== 工具函数 ======
+        function idx(x, y) {
+          return y * cols + x;
+        }
+        function inBounds(x, y) {
+          return x >= 0 && x < cols && y >= 0 && y < rows;
+        }
+
+        function build() {
+          clearErr();
+          cols = +$("cols").value || 20;
+          rows = +$("rows").value || 15;
+          cols = Math.max(5, Math.min(200, cols));
+          rows = Math.max(5, Math.min(200, rows));
+          grid = new Array(cols * rows).fill(false);
+          start = goal = null;
+          path = [];
+          cursor = 0;
+          cv.width = cols * cell;
+          cv.height = rows * cell;
+          draw();
+          updateStats();
+        }
+
+        function draw() {
+          ctx.clearRect(0, 0, cv.width, cv.height);
+          // 背景白色
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, cv.width, cv.height);
+
+          // 障碍（红色）
+          for (let y = 0; y < rows; y++) {
+            for (let x = 0; x < cols; x++) {
+              if (grid[idx(x, y)]) {
+                ctx.fillStyle = "#e53935"; // red
+                ctx.fillRect(x * cell, y * cell, cell, cell);
+              }
+            }
+          }
+
+          // 路径
+          if (path.length) {
+            ctx.fillStyle = "#d0b236";
+            const last = Math.min(cursor, path.length - 1);
+            for (let i = 0; i <= last; i++) {
+              const p = path[i];
+              ctx.fillRect(p.x * cell + 4, p.y * cell + 4, cell - 8, cell - 8);
+            }
+            const cur = path[last];
+            if (cur) {
+              ctx.fillStyle = "#3aa6ff";
+              ctx.fillRect(
+                cur.x * cell + 6,
+                cur.y * cell + 6,
+                cell - 12,
+                cell - 12
+              );
+            }
+          }
+
+          // 起终点
+          if (start) {
+            ctx.fillStyle = "#13c57e";
+            ctx.fillRect(
+              start.x * cell + 2,
+              start.y * cell + 2,
+              cell - 4,
+              cell - 4
+            );
+          }
+          if (goal) {
+            ctx.fillStyle = "#6d03b4";
+            ctx.fillRect(
+              goal.x * cell + 2,
+              goal.y * cell + 2,
+              cell - 4,
+              cell - 4
+            );
+          }
+
+          // 网格线（黑）
+          ctx.strokeStyle = "#000000";
+          ctx.lineWidth = 1;
+          for (let x = 0; x <= cols; x++) {
+            ctx.beginPath();
+            ctx.moveTo(x * cell + 0.5, 0);
+            ctx.lineTo(x * cell + 0.5, rows * cell);
+            ctx.stroke();
+          }
+          for (let y = 0; y <= rows; y++) {
+            ctx.beginPath();
+            ctx.moveTo(0, y * cell + 0.5);
+            ctx.lineTo(cols * cell, y * cell + 0.5);
+            ctx.stroke();
+          }
+        }
+
+        function setObstacle(x, y, val) {
+          if (!inBounds(x, y)) return;
+          if (start && start.x === x && start.y === y) return;
+          if (goal && goal.x === x && goal.y === y) return;
+          grid[idx(x, y)] = val;
+        }
+
+        function currentMode() {
+          const el = document.querySelector('input[name="mode"]:checked');
+          return el ? el.value : "paint";
+        }
+
+        function cellFromEvent(e) {
+          const r = cv.getBoundingClientRect();
+          const x = Math.floor((e.clientX - r.left) / cell);
+          const y = Math.floor((e.clientY - r.top) / cell);
+          return { x, y };
+        }
+
+        // ====== 交互：画板与起终点 ======
+        cv.addEventListener("mousedown", (e) => {
+          mouseDown = true;
+          const { x, y } = cellFromEvent(e);
+          if (!inBounds(x, y)) return;
+          const m = currentMode();
+          if (m === "paint") {
+            paintVal = !grid[idx(x, y)];
+            setObstacle(x, y, paintVal);
+          } else if (m === "start") {
+            start = { x, y };
+            grid[idx(x, y)] = false;
+            path = [];
+            cursor = 0;
+          } else if (m === "goal") {
+            goal = { x, y };
+            grid[idx(x, y)] = false;
+            path = [];
+            cursor = 0;
+          }
+          draw();
+        });
+        cv.addEventListener("mousemove", (e) => {
+          if (!mouseDown || currentMode() !== "paint") return;
+          const { x, y } = cellFromEvent(e);
+          setObstacle(x, y, paintVal);
+          draw();
+        });
+        window.addEventListener("mouseup", () => (mouseDown = false));
+
+        // ====== A* ======
+        // 代价：直走10，斜走14；启发：八方向距离（保持可采纳）
+        function heuristic(x1, y1, x2, y2) {
+          const dx = Math.abs(x1 - x2),
+            dy = Math.abs(y1 - y2);
+          const dmin = Math.min(dx, dy),
+            dmax = Math.max(dx, dy);
+          return 14 * dmin + 10 * (dmax - dmin);
+        }
+
+        function neighbors(x, y) {
+          const out = [];
+          const dirs = [
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1],
+          ];
+          if (allowDiag) dirs.push([1, 1], [1, -1], [-1, 1], [-1, -1]);
+          for (const [dx, dy] of dirs) {
+            const nx = x + dx,
+              ny = y + dy;
+            if (!inBounds(nx, ny) || grid[idx(nx, ny)]) continue;
+            // 禁止“穿角”
+            if (allowDiag && !cutCorners && dx && dy) {
+              if (grid[idx(x, ny)] || grid[idx(nx, y)]) continue;
+            }
+            out.push({ x: nx, y: ny, cost: dx === 0 || dy === 0 ? 10 : 14 });
+          }
+          return out;
+        }
+
+        function runAStar() {
+          clearErr();
+          try {
+            if (!start || !goal) {
+              alert("始点と終点を設定してください");
+              return;
+            }
+            if (grid[idx(goal.x, goal.y)]) {
+              alert("終点は障害セルです");
+              return;
+            }
+
+            const N = cols * rows;
+            const G = new Array(N).fill(1e9);
+            const F = new Array(N).fill(1e9);
+            const H = new Array(N).fill(0);
+            const openSet = new Array(N).fill(0);
+            const closed = new Array(N).fill(0);
+            const parent = new Array(N).fill(-1);
+
+            const s = idx(start.x, start.y),
+              t = idx(goal.x, goal.y);
+            G[s] = 0;
+            H[s] = heuristic(start.x, start.y, goal.x, goal.y);
+            F[s] = H[s];
+            openSet[s] = 1;
+
+            function pop() {
+              let u = -1,
+                bestF = 1e9,
+                bestH = 1e9;
+              for (let i = 0; i < N; i++) {
+                if (openSet[i]) {
+                  if (F[i] < bestF || (F[i] === bestF && H[i] < bestH)) {
+                    bestF = F[i];
+                    bestH = H[i];
+                    u = i;
+                  }
+                }
+              }
+              if (u !== -1) openSet[u] = 0;
+              return u;
+            }
+
+            while (true) {
+              const u = pop();
+              if (u === -1) {
+                alert("到達可能な経路がありません");
+                path = [];
+                cursor = 0;
+                updateStats();
+                draw();
+                return;
+              }
+              if (u === t) break;
+              closed[u] = 1;
+
+              const ux = u % cols,
+                uy = (u / cols) | 0;
+              for (const nb of neighbors(ux, uy)) {
+                const v = idx(nb.x, nb.y);
+                if (closed[v]) continue;
+
+                const tentative = G[u] + nb.cost;
+                if (tentative < G[v]) {
+                  parent[v] = u;
+                  G[v] = tentative;
+                  H[v] = heuristic(nb.x, nb.y, goal.x, goal.y);
+                  F[v] = G[v] + H[v];
+                  if (!openSet[v]) openSet[v] = 1; // 确保入开放集
+                }
+              }
+            }
+
+            // 回溯
+            const out = [];
+            for (let cur = t; cur !== -1; cur = parent[cur]) {
+              out.push({ x: cur % cols, y: (cur / cols) | 0 });
+              if (cur === s) break;
+            }
+            out.reverse();
+            path = out;
+            cursor = 0;
+            updateStats();
+            draw();
+          } catch (e) {
+            showErr(e.stack || e);
+          }
+        }
+
+        function updateStats() {
+          $("steps").textContent = path.length ? path.length - 1 : 0;
+          $("cursor").textContent = cursor;
+        }
+
+        // ====== 绑定 UI ======
+        $("build").onclick = () => build();
+        $("solve").onclick = () => {
+          allowDiag = $("diag").checked;
+          cutCorners = $("cut").checked;
+          runAStar();
+        };
+        $("prev").onclick = () => {
+          if (path.length) {
+            cursor = Math.max(0, cursor - 1);
+            updateStats();
+            draw();
+          }
+        };
+        $("next").onclick = () => {
+          if (path.length) {
+            cursor = Math.min(path.length - 1, cursor + 1);
+            updateStats();
+            draw();
+          }
+        };
+        $("reset").onclick = () => {
+          path = [];
+          cursor = 0;
+          updateStats();
+          draw();
+        };
+
+        // 初始
+        build();
+      })();
+    </script>
+  </body>
+</html>
